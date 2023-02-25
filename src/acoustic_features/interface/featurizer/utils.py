@@ -1,0 +1,211 @@
+import numpy
+from itertools import chain, product
+from acoustic_features.features.configuration.settings import AcousticFeaturesSettings
+
+
+class SingleSubjectFeatureUtils(object):
+    """Class implementing single-subject feature values/labels utils"""
+
+    # Acoustic features settings
+    features_settings = AcousticFeaturesSettings
+
+    @classmethod
+    def prepare_feature_values(cls, extracted):
+        """
+        Prepares the feature values.
+
+        :param extracted: extracted feature values
+        :type extracted: numpy.ndarray
+        :return: prepared feature values
+        :rtype: numpy.ndarray
+        """
+        return extracted
+
+    @classmethod
+    def prepare_feature_labels(cls, extracted, feature_name, feature_args=None):
+        """
+        Prepares the feature labels.
+
+        :param extracted: extracted feature values
+        :type extracted: numpy.ndarray
+        :param feature_name: feature name
+        :type feature_name: str
+        :param feature_args: feature arguments, defaults to None
+        :type feature_args: dict, optional
+        :return: prepared feature labels
+        :rtype: list
+        """
+
+        # Prepare the base of the feature label(s) (handle these cases)
+        #
+        # 1. feature with statistics
+        # 2. feature without statistics
+        #    a) single-valued feature (i.e. no statistics are available)
+        #    b) multi-valued (array-like) feature
+
+        # Prepare default feature args
+        feature_args = feature_args if feature_args else {}
+
+        # 1. Handle: feature with statistics
+        if feature_args.get("statistics"):
+
+            # Prepare the feature label(s)
+            statistics = feature_args["statistics"]
+            statistics = [statistics] if isinstance(statistics, str) else statistics
+
+            labels = [
+                f"{stat}:{feature_name}"
+                for stat in statistics
+            ]
+
+        # 2. Handle: feature without statistics
+        else:
+
+            # Prepare the feature label(s)
+            labels = [f"{feature_name}"] * len(extracted)
+
+            # Handle multi-values feature
+            if len(labels) > 1:
+                preset = None
+                if cls.features_settings.settings.get(feature_name, {}).get("properties", {}).get("is_composite"):
+                    preset = cls.features_settings.settings[feature_name]["properties"].get("composite_feature_names")
+                    if preset:
+                        labels = preset \
+                            if len(preset) == len(labels) \
+                            else preset + [f"{label}(missing name specification)" for label in labels[len(preset):]]
+                if not preset:
+                    labels = [f"{label}(sample-{i})" for i, label in enumerate(labels, 1)]
+
+        # Return the prepared feature labels
+        return labels
+
+
+class MultiSubjectFeatureUtils(object):
+    """Class implementing multi-subject feature values/labels utils"""
+
+    @classmethod
+    def prepare_feature_values(cls, extracted, pipeline):
+        """
+        Prepares the feature values.
+
+        :param extracted: extracted features
+        :type extracted: list
+        :param pipeline: pipeline of the features to be extracted
+        :type pipeline: list
+        :return: finalized feature values
+        :rtype: numpy.ndarray
+        """
+
+        # Get the number of subjects and features
+        num_subjects = len(extracted)
+        num_features = len(pipeline)
+
+        # Prepare the list of feature values (each feature with data for all subjects)
+        features = [
+            [subject["features"][feature] for subject in extracted]
+            for feature in range(num_features)
+        ]
+
+        # Prepare the list of consolidated feature values
+        consolidated = []
+
+        # Consolidate the lengths of the feature values
+        for feature in features:
+            max_length = max(len(subject) for subject in feature)
+
+            if all(len(subject) == max_length for subject in feature):
+                consolidated.append(feature)
+            else:
+                consolidated.append([
+                    numpy.concatenate([subject, numpy.full((max_length - len(subject),), numpy.nan)])
+                    for subject in feature
+                ])
+
+        # Prepare the feature values to be finalized
+        features = [
+            [feature[subject] for feature in consolidated]
+            for subject in range(num_subjects)
+        ]
+
+        # Finalize the feature values (concatenate: 1. over features. 2. over subjects)
+        features = [numpy.expand_dims(numpy.hstack(subject), axis=0) for subject in features]
+        features = numpy.vstack(list(subject for subject in features))
+
+        # Return the finalized feature values
+        return features
+
+    @classmethod
+    def prepare_feature_labels(cls, extracted, pipeline):
+        """
+        Prepares the feature labels.
+
+        :param extracted: extracted features
+        :type extracted: list
+        :param pipeline: pipeline of the features to be extracted
+        :type pipeline: list
+        :return: finalized feature labels
+        :rtype: list
+        """
+
+        # Get the number of features
+        num_features = len(pipeline)
+
+        # Prepare the list of feature labels (each feature with data for all subjects)
+        features = [
+            [subject["labels"][feature] for subject in extracted]
+            for feature in range(num_features)
+        ]
+
+        # Finalize the feature labels
+        labels = list(chain.from_iterable([max(feature, key=len) for feature in features]))
+
+        # Return the finalized feature labels
+        return labels
+
+
+class FeaturesPipelineUtils(object):
+    """Class implementing features pipeline utils"""
+
+    # Arguments to be prepared
+    arguments_to_prepare = ()
+
+    @classmethod
+    def prepare_features_pipeline(cls, pipeline):
+        """
+        Prepares the features pipeline.
+
+        :param pipeline: pipeline of the features to be extracted
+        :type pipeline: list
+        :return: prepared pipeline
+        :rtype: list
+        """
+
+        # Prepare an empty updated features pipeline
+        prepared = []
+
+        # Prepare the features pipeline
+        for feature in pipeline:
+            name, args = feature.get("name"), feature.get("args", {})
+
+            # Clean the arguments
+            args = {key: val for key, val in args.items() if val}
+
+            # Separate the arguments not/to be prepared
+            unchanged_args = {key: val for key, val in args.items() if key not in cls.arguments_to_prepare}
+            processed_args = [
+                (key, val if isinstance(val, list) else [val])
+                for key, val in args.items() if key in cls.arguments_to_prepare
+            ]
+
+            # Process the arguments
+            processed_args = list(product(*[[(key, v) for v in val] for key, val in processed_args]))
+
+            # Add the feature to the features pipeline
+            for changed_args in processed_args:
+                prepared.append({
+                    "name": name,
+                    "args": {**unchanged_args, **dict(changed_args)}
+                })
+
+        # Return the prepared features pipeline
+        return prepared

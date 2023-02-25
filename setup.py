@@ -8,7 +8,10 @@ long_description = (pathlib.Path(__file__).parent.resolve() / "README.md").read_
 # Prepare the packages and requirements
 packages = find_packages(where="src")
 requires = [
+    "numpy",
+    "pandas",
     # ...
+    # "acoustic_sample"  # TODO: uncomment when the package is available
 ]
 
 # Prepare the setup
